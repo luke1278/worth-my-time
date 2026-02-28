@@ -5845,6 +5845,14 @@ function getDirectText(element) {
 // Returns the deepest element that directly holds price text, or null if none found.
 const PRICE_DETECT_RE = /(?:NT\$|AU\$|CA\$|NZ\$|HK\$|SG\$|US\$|A\$|C\$|R\$|\$|£|€|¥|₩|₺|₽|₴|₪|₦|₵|₱|₫|฿|₹|RM|Rp)\s*\d[\d,. ]*|\d[\d,. ]*\s*(?:AUD|NZD|CAD|USD|EUR|GBP|JPY|CNY|CHF|HKD|SGD|KRW|TWD|INR|IDR|MYR|THB|PHP|VND|ZAR|AED|SAR|TRY|RUB|PLN|SEK|NOK|DKK)|(?:AUD|NZD|CAD|USD|EUR|GBP|JPY|CHF|HKD|SGD|KRW|TWD|INR|IDR|MYR|THB|PHP|VND|ZAR|AED|SAR|TRY|RUB|PLN|SEK|NOK|DKK)\s+\d[\d,. ]*/;
 
+const UNIVERSAL_STANDARD_ISO_CODES = '(?:AUD|NZD|CAD|HKD|SGD|USD|EUR|GBP|JPY|CNY|CHF|SEK|NOK|DKK|KRW|TWD|NTD|INR|IDR|MYR|THB|PHP|VND|PKR|BDT|ZAR|NGN|KES|GHS|EGP|AED|SAR|QAR|KWD|BHD|OMR|ILS|TRY|RUB|UAH|PLN|CZK|HUF|RON|ISK|BGN|BRL|MXN|ARS|CLP|COP|PEN)';
+const UNIVERSAL_STANDARD_AMOUNT = '(\\d{1,3}(?:[,.\\ ]\\d{3})*(?:[.,]\\d{2})?)';
+const UNIVERSAL_STANDARD_PRICE_RE = new RegExp(
+  '(?:NT\\$|AU\\$|CA\\$|NZ\\$|HK\\$|SG\\$|S\\$|C\\$|A\\$|R\\$|MX\\$|AR\\$|US\\$|BDS\\$|EC\\$|TT\\$|J\\$|SI\\$|FJ\\$|B\\$|T\\$|RD\\$|Ksh|RM|Rp|kr\\.?|zł|Kč|Ft|lei|лв|din|KM|Lek|Br|MT|Kz|MK|ZK|Rs\\.?|₹|€|£|¥|₩|₺|₽|₴|₪|₦|₵|₱|₫|฿|₭|₲|₡|₼|₾|֏|₮|₸|؋|﷼|₨|৳|₧|\\$)\\s*' + UNIVERSAL_STANDARD_AMOUNT +
+  '|' + UNIVERSAL_STANDARD_AMOUNT + '\\s*(?:' + UNIVERSAL_STANDARD_ISO_CODES.slice(4, -1) + ')(?!\\w)' +
+  '|' + UNIVERSAL_STANDARD_ISO_CODES + '\\s+' + UNIVERSAL_STANDARD_AMOUNT
+);
+
 function findInnermostPriceElement(element, depth) {
   depth = depth || 0;
   if (depth > 8) return null;
@@ -6008,7 +6016,9 @@ const UniversalDetector = {
     ];
     
     const elements = document.querySelectorAll(selectors.join(', '));
-    
+    const candidateElements = [];
+    const candidateIndexByElement = new Map();
+
     elements.forEach(element => {
       if (processedElements.has(element)) return;
       if (element.querySelector('.timeprice-converted')) return;
@@ -6028,26 +6038,30 @@ const UniversalDetector = {
       // be processed when the loop reaches it directly, preventing double injection.
       if (priceTarget !== element) return;
 
+      // Keep only innermost matches for this pass with O(depth) ancestor checks.
+      // If an ancestor was queued earlier in document order, null it out now.
+      let ancestor = element.parentElement;
+      while (ancestor && ancestor !== document.body) {
+        const ancestorIndex = candidateIndexByElement.get(ancestor);
+        if (ancestorIndex !== undefined) {
+          candidateElements[ancestorIndex] = null;
+          candidateIndexByElement.delete(ancestor);
+        }
+        ancestor = ancestor.parentElement;
+      }
+
+      candidateIndexByElement.set(element, candidateElements.length);
+      candidateElements.push(element);
+    });
+
+    candidateElements.forEach(element => {
+      if (!element) return;
+
       const text = getDirectText(element);
       if (!text || text.length > 80) return;
-
-      // Look for price pattern — matches all major currency formats:
-      // $9.99  £9.99  €9.99  ¥999  ₹999  NT$999  AU$9.99  9.99 USD  RM9.99  etc.
-      // Three capture groups:
-      // [1] symbol-prefix:  $9.99  £9.99  €9.99  RM9.99  AU$9.99
-      // [2] code-suffix:    9.99 USD  9,400 AUD
-      // [3] code-prefix:    AUD 9,400  USD 299  EUR 1.200  (e.g. Bang & Olufsen)
-      const ISO_CODES = '(?:AUD|NZD|CAD|HKD|SGD|USD|EUR|GBP|JPY|CNY|CHF|SEK|NOK|DKK|KRW|TWD|NTD|INR|IDR|MYR|THB|PHP|VND|PKR|BDT|ZAR|NGN|KES|GHS|EGP|AED|SAR|QAR|KWD|BHD|OMR|ILS|TRY|RUB|UAH|PLN|CZK|HUF|RON|ISK|BGN|BRL|MXN|ARS|CLP|COP|PEN)';
-      const AMOUNT = '(\\d{1,3}(?:[,.\\ ]\\d{3})*(?:[.,]\\d{2})?)';
-      const pattern = new RegExp(
-        // Group 1: symbol prefix  e.g. $9.99  £9.99  AU$9.99  RM9.99
-        '(?:NT\\$|AU\\$|CA\\$|NZ\\$|HK\\$|SG\\$|S\\$|C\\$|A\\$|R\\$|MX\\$|AR\\$|US\\$|BDS\\$|EC\\$|TT\\$|J\\$|SI\\$|FJ\\$|B\\$|T\\$|RD\\$|Ksh|RM|Rp|kr\\.?|zł|Kč|Ft|lei|лв|din|KM|Lek|Br|MT|Kz|MK|ZK|Rs\\.?|₹|€|£|¥|₩|₺|₽|₴|₪|₦|₵|₱|₫|฿|₭|₲|₡|₼|₾|֏|₮|₸|؋|﷼|₨|৳|₧|\\$)\\s*' + AMOUNT +
-        // Group 2: code suffix  e.g. 9.99 USD
-        '|' + AMOUNT + '\\s*(?:' + ISO_CODES.slice(4,-1) + ')(?!\\w)' +
-        // Group 3: code prefix with space  e.g. AUD 9,400  USD 299
-        '|' + ISO_CODES + '\\s+' + AMOUNT
-      );
-      const match = text.match(pattern);
+      // Look for price pattern — matches all major currency formats.
+      // Uses a shared precompiled regex to keep this hot loop fast.
+      const match = text.match(UNIVERSAL_STANDARD_PRICE_RE);
       
       if (match) {
         // match[1] = symbol-prefixed, match[2] = code-suffixed, match[3+4] = code-prefixed (AUD 9,400)
