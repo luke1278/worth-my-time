@@ -1055,6 +1055,8 @@ const UniversalDetector = {
   process: function() {
     console.log('[Worth My Time] Using Universal detector');
     let totalConverted = 0;
+    const candidatePrices = [];
+    const seenPriceKeysThisPass = new Set();
     
     // Find all potential price elements
     const selectors = [
@@ -1068,7 +1070,7 @@ const UniversalDetector = {
     ];
     
     const elements = document.querySelectorAll(selectors.join(', '));
-    
+
     elements.forEach(element => {
       if (processedElements.has(element)) return;
       if (element.querySelector('.timeprice-converted')) return;
@@ -1092,27 +1094,48 @@ const UniversalDetector = {
         
         // Context validation
         if (!this.isPriceContext(element)) return;
-        
-        // Check for duplicates
+
+        // Prepare duplicate key (checked after innermost filtering)
         const productContainer = findProductContainer(element);
         const priceKey = `${productContainer.id || productContainer.className}-${price}`;
-        if (processedPrices.has(priceKey)) return;
-        
-        const workTime = calculateWorkTime(price);
-        if (workTime) {
-          const timeElement = createConvertedElement(price, workTime);
-          
-          if (element.nextSibling) {
-            element.parentNode.insertBefore(timeElement, element.nextSibling);
-          } else {
-            element.parentNode.appendChild(timeElement);
-          }
-          
-          processedElements.add(element);
-          processedPrices.set(priceKey, true);
-          totalConverted++;
-        }
+
+        candidatePrices.push({ element, price, priceKey });
       }
+    });
+
+    // Keep only innermost matching elements so parent/child price matches don't double-inject.
+    const candidateElements = new Set(candidatePrices.map(candidate => candidate.element));
+    const ancestorCandidatesToSkip = new Set();
+
+    candidatePrices.forEach(({ element }) => {
+      let parent = element.parentElement;
+      while (parent) {
+        if (candidateElements.has(parent)) {
+          ancestorCandidatesToSkip.add(parent);
+        }
+        parent = parent.parentElement;
+      }
+    });
+
+    candidatePrices.forEach(({ element, price, priceKey }) => {
+      if (ancestorCandidatesToSkip.has(element)) return;
+      if (processedPrices.has(priceKey) || seenPriceKeysThisPass.has(priceKey)) return;
+
+      const workTime = calculateWorkTime(price);
+      if (!workTime) return;
+
+      const timeElement = createConvertedElement(price, workTime);
+
+      if (element.nextSibling) {
+        element.parentNode.insertBefore(timeElement, element.nextSibling);
+      } else {
+        element.parentNode.appendChild(timeElement);
+      }
+
+      processedElements.add(element);
+      processedPrices.set(priceKey, true);
+      seenPriceKeysThisPass.add(priceKey);
+      totalConverted++;
     });
     
     console.log(`[Worth My Time] Universal detector converted ${totalConverted} prices`);
